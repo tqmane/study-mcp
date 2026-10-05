@@ -14,6 +14,8 @@
 
     environment:
       MOODLE_URL: http://moodle:8080
+      # Keep traffic private while presenting Moodle's canonical SITE_URL host.
+      MOODLE_HOST_HEADER: study.tqmane.dev
       MOODLE_TOKEN: ${MOODLE_TOKEN}
       PAPERLESS_URL: http://paperless:8000
       PAPERLESS_TOKEN: ${PAPERLESS_TOKEN}
