@@ -1,6 +1,6 @@
   # =========================================================
   # Study MCP
-  # ChatGPT -> OAI Tunnel -> MCP -> Moodle / Paperless
+  # ChatGPT Plugin -> OAI Tunnel -> MCP -> Moodle / Paperless
   # =========================================================
   study-mcp:
     image: ghcr.io/tqmane/study-mcp:latest
@@ -19,9 +19,16 @@
       PAPERLESS_TOKEN: ${PAPERLESS_TOKEN}
       MCP_HOST: 0.0.0.0
       MCP_PORT: "17311"
+      STUDY_DB_PATH: /data/study.sqlite3
+
+    volumes:
+      - study-mcp-data:/data
 
     ports:
       - "127.0.0.1:17311:17311"
 
     networks:
       - study-egress
+
+# ALSO add this under the existing top-level volumes: section:
+#   study-mcp-data:
