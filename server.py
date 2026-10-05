@@ -12,6 +12,7 @@ from mcp.types import ImageContent
 
 MOODLE_URL = os.environ["MOODLE_URL"].rstrip("/")
 MOODLE_TOKEN = os.environ["MOODLE_TOKEN"]
+MOODLE_HOST_HEADER = os.getenv("MOODLE_HOST_HEADER", "").strip()
 PAPERLESS_URL = os.environ["PAPERLESS_URL"].rstrip("/")
 PAPERLESS_TOKEN = os.environ["PAPERLESS_TOKEN"]
 
@@ -126,13 +127,41 @@ async def moodle_call(
             _flatten(key, value, flattened)
         payload.update(flattened)
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    headers: dict[str, str] = {}
+    if MOODLE_HOST_HEADER:
+        # Moodle enforces $CFG->wwwroot/SITE_URL. When we connect over the
+        # private Docker hostname (for example http://moodle:8080), preserve
+        # the public Host so Moodle does not redirect the REST call through
+        # the public reverse proxy / Cloudflare Access layer.
+        headers["Host"] = MOODLE_HOST_HEADER
+
+    async with httpx.AsyncClient(timeout=60.0, follow_redirects=False) as client:
         response = await client.post(
             f"{MOODLE_URL}/webservice/rest/server.php",
             data=payload,
+            headers=headers,
         )
+
+        if response.is_redirect:
+            raise RuntimeError(
+                "Moodle redirected the REST request "
+                f"(HTTP {response.status_code}, "
+                f"location={response.headers.get('location', '<missing>')!r}). "
+                "MOODLE_URL is intended to be the private Docker URL; "
+                "set MOODLE_HOST_HEADER to the hostname from Moodle SITE_URL."
+            )
+
         response.raise_for_status()
-        data = response.json()
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise RuntimeError(
+                "Moodle returned a non-JSON REST response "
+                f"(HTTP {response.status_code}, "
+                f"content-type={response.headers.get('content-type', '<missing>')!r}). "
+                "Check MOODLE_URL, MOODLE_HOST_HEADER, Moodle SITE_URL, "
+                "and reverse-proxy / Cloudflare Access configuration."
+            ) from exc
 
     if isinstance(data, dict) and data.get("exception"):
         raise RuntimeError(
