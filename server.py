@@ -759,16 +759,33 @@ async def upload_document_base64(
     document_type_id: int = 0,
 ) -> Any:
     """WRITE: upload a document to Paperless from base64 bytes."""
-    raw = base64.b64decode(data_base64)
-    fields: list[tuple[str, str]] = []
+    if not filename.strip():
+        raise ValueError("filename must not be empty")
+
+    try:
+        raw = base64.b64decode(data_base64, validate=True)
+    except (ValueError, base64.binascii.Error) as exc:
+        raise ValueError("data_base64 is not valid base64") from exc
+
+    if not raw:
+        raise ValueError("decoded document is empty")
+
+    # httpx AsyncClient must receive form fields as a mapping when files= is
+    # present. Passing a list[tuple] here is interpreted as a synchronous
+    # request body stream by httpx 0.28 and raises:
+    # "Attempted to send an sync request with an AsyncClient instance."
+    #
+    # A list value in a mapping is encoded as repeated multipart fields, which
+    # is exactly what Paperless expects for multiple tags.
+    fields: dict[str, Any] = {}
     if title:
-        fields.append(("title", title))
+        fields["title"] = title
     if correspondent_id:
-        fields.append(("correspondent", str(correspondent_id)))
+        fields["correspondent"] = str(correspondent_id)
     if document_type_id:
-        fields.append(("document_type", str(document_type_id)))
-    for tag in tag_ids or []:
-        fields.append(("tags", str(tag)))
+        fields["document_type"] = str(document_type_id)
+    if tag_ids:
+        fields["tags"] = [str(tag) for tag in tag_ids]
 
     async with httpx.AsyncClient(timeout=120.0) as client:
         response = await client.post(
@@ -777,7 +794,14 @@ async def upload_document_base64(
             data=fields,
             files={"document": (filename, raw, "application/octet-stream")},
         )
-        response.raise_for_status()
+
+        if response.status_code >= 400:
+            snippet = response.text[:1200].replace("\n", " ")
+            raise RuntimeError(
+                "Paperless document upload failed "
+                f"(HTTP {response.status_code}, body={snippet!r})"
+            )
+
         try:
             return response.json()
         except ValueError:
