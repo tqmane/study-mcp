@@ -129,11 +129,12 @@ async def moodle_call(
 
     headers: dict[str, str] = {}
     if MOODLE_HOST_HEADER:
-        # Moodle enforces $CFG->wwwroot/SITE_URL. When we connect over the
-        # private Docker hostname (for example http://moodle:8080), preserve
-        # the public Host so Moodle does not redirect the REST call through
-        # the public reverse proxy / Cloudflare Access layer.
+        # Moodle enforces $CFG->wwwroot/SITE_URL. Keep the public host while
+        # routing the TCP connection over the private Docker network.
         headers["Host"] = MOODLE_HOST_HEADER
+        headers["X-Forwarded-Host"] = MOODLE_HOST_HEADER
+        headers["X-Forwarded-Proto"] = "https"
+        headers["X-Forwarded-Port"] = "443"
 
     async with httpx.AsyncClient(timeout=60.0, follow_redirects=False) as client:
         response = await client.post(
@@ -151,14 +152,24 @@ async def moodle_call(
                 "set MOODLE_HOST_HEADER to the hostname from Moodle SITE_URL."
             )
 
-        response.raise_for_status()
+        if response.status_code >= 400:
+            snippet = response.text[:1200].replace("\n", " ")
+            raise RuntimeError(
+                "Moodle REST HTTP failure "
+                f"(HTTP {response.status_code}, "
+                f"content-type={response.headers.get('content-type', '<missing>')!r}, "
+                f"body={snippet!r})."
+            )
+
         try:
             data = response.json()
         except ValueError as exc:
+            snippet = response.text[:1200].replace("\n", " ")
             raise RuntimeError(
                 "Moodle returned a non-JSON REST response "
                 f"(HTTP {response.status_code}, "
-                f"content-type={response.headers.get('content-type', '<missing>')!r}). "
+                f"content-type={response.headers.get('content-type', '<missing>')!r}, "
+                f"body={snippet!r}). "
                 "Check MOODLE_URL, MOODLE_HOST_HEADER, Moodle SITE_URL, "
                 "and reverse-proxy / Cloudflare Access configuration."
             ) from exc
@@ -241,28 +252,83 @@ async def paperless_bytes(path: str) -> tuple[bytes, str]:
 
 @mcp.tool()
 async def health() -> dict[str, Any]:
-    """Check Moodle, Paperless and the local study database."""
-    site = await current_moodle_user()
-    docs = await paperless_json("GET", "/api/documents/", params={"page_size": 1})
-    conn = db()
-    try:
-        conn.execute("SELECT 1").fetchone()
-    finally:
-        conn.close()
+    """Check Moodle, Paperless and the local study database without failing the whole check."""
+    result: dict[str, Any] = {}
 
-    return {
-        "moodle": {
+    try:
+        site = await current_moodle_user()
+        result["moodle"] = {
             "ok": True,
             "site": site.get("sitename"),
             "username": site.get("username"),
             "user_id": site.get("userid"),
-        },
-        "paperless": {
+        }
+    except Exception as exc:
+        result["moodle"] = {"ok": False, "error": str(exc)}
+
+    try:
+        docs = await paperless_json("GET", "/api/documents/", params={"page_size": 1})
+        result["paperless"] = {
             "ok": True,
             "document_count": docs.get("count", 0),
-        },
-        "study_db": {"ok": True, "path": STUDY_DB_PATH},
+        }
+    except Exception as exc:
+        result["paperless"] = {"ok": False, "error": str(exc)}
+
+    try:
+        conn = db()
+        try:
+            conn.execute("SELECT 1").fetchone()
+        finally:
+            conn.close()
+        result["study_db"] = {"ok": True, "path": STUDY_DB_PATH}
+    except Exception as exc:
+        result["study_db"] = {"ok": False, "error": str(exc)}
+
+    return result
+
+
+@mcp.tool()
+async def diagnose_moodle() -> dict[str, Any]:
+    """Diagnose the private Moodle REST path and return a redacted response summary."""
+    payload = {
+        "wstoken": MOODLE_TOKEN,
+        "wsfunction": "core_webservice_get_site_info",
+        "moodlewsrestformat": "json",
     }
+    headers: dict[str, str] = {}
+    if MOODLE_HOST_HEADER:
+        headers["Host"] = MOODLE_HOST_HEADER
+        headers["X-Forwarded-Host"] = MOODLE_HOST_HEADER
+        headers["X-Forwarded-Proto"] = "https"
+        headers["X-Forwarded-Port"] = "443"
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=False) as client:
+            response = await client.post(
+                f"{MOODLE_URL}/webservice/rest/server.php",
+                data=payload,
+                headers=headers,
+            )
+        body = response.text[:1600].replace("\n", " ")
+        return {
+            "ok": response.status_code < 400 and not response.is_redirect,
+            "moodle_url": MOODLE_URL,
+            "host_header": MOODLE_HOST_HEADER or None,
+            "token_length": len(MOODLE_TOKEN),
+            "status_code": response.status_code,
+            "content_type": response.headers.get("content-type"),
+            "location": response.headers.get("location"),
+            "body_preview": body,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "moodle_url": MOODLE_URL,
+            "host_header": MOODLE_HOST_HEADER or None,
+            "token_length": len(MOODLE_TOKEN),
+            "transport_error": repr(exc),
+        }
 
 
 @mcp.tool()
