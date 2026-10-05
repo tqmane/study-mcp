@@ -28,6 +28,17 @@ PAPERLESS_TOKEN=<Paperless admin API token>
 
 Paste `portainer-service.yml` inside the existing `services:` block.
 
+The service deliberately uses the private Docker URL `http://moodle:8080` together with:
+
+```text
+MOODLE_HOST_HEADER=study.tqmane.dev
+```
+
+Moodle validates requests against its configured `SITE_URL` / `$CFG->wwwroot`.
+Sending the canonical public Host header prevents internal REST calls from being
+redirected through Cloudflare Access while keeping the actual connection on the
+private Docker network.
+
 Also add this to the existing top-level `volumes:` block:
 
 ```yaml
