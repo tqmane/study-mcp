@@ -1,0 +1,27 @@
+  # =========================================================
+  # Study MCP
+  # ChatGPT -> OAI Tunnel -> MCP -> Moodle / Paperless
+  # =========================================================
+  study-mcp:
+    image: ghcr.io/tqmane/study-mcp:latest
+    restart: unless-stopped
+
+    depends_on:
+      moodle:
+        condition: service_healthy
+      paperless:
+        condition: service_healthy
+
+    environment:
+      MOODLE_URL: http://moodle:8080
+      MOODLE_TOKEN: ${MOODLE_TOKEN}
+      PAPERLESS_URL: http://paperless:8000
+      PAPERLESS_TOKEN: ${PAPERLESS_TOKEN}
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: "17311"
+
+    ports:
+      - "127.0.0.1:17311:17311"
+
+    networks:
+      - study-egress
